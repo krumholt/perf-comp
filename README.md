@@ -109,7 +109,9 @@ SBCL (`sb-simd`) all run a loop of `vaddpd ymm` instructions at ~70 ms.
 **6. In parallel, scheduling overhead matters.** This CPU has three kinds of
 core at different speeds, so splitting into 16 equal pieces leaves fast cores
 idle while slow ones finish; rayon's work stealing and 256-chunk queues avoid
-that. At 5–15 ms, fixed costs also show: thread-pool start-up, and for C#
+that. SBCL with lparallel's `pmap-reduce` over 256 chunks (40 ms) almost
+matches rayon, while the hand-rolled 16-thread split takes 66 ms with the same
+per-chunk loop. At 5–15 ms, fixed costs also show: thread-pool start-up, and for C#
 PLINQ set-up plus the JIT still optimizing the kernel during the timed run. PLINQ
 per element (287 ms) is slow because it processes a billion tiny items through
 generic iterator calls. Give it 256 chunks and it is fine.
