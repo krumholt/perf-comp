@@ -1,0 +1,8 @@
+rust/target/
+csharp*/bin/
+csharp*/obj/
+csharp*/out/
+*.fasl
+sbcl/sum
+sbcl/sum-opt
+sbcl/sum-simd
