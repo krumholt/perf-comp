@@ -44,13 +44,15 @@ Times in ms; "vs best" compares each average to the fastest entry in the same gr
 | | SBCL | 8 accumulators | 237 | 1.4x |
 | | C# | 8 accumulators | 242 | 1.5x |
 | **parallel-8acc** | Rust | rayon, 256 chunks | 11 | 1.0x |
-| | SBCL | `sb-thread`, 256 chunks | 16 | 1.5x |
+| | SBCL | `sb-thread`, 256 chunks | 16 | 1.4x |
+| | SBCL | lparallel `pmap-reduce`, 256 chunks | 17 | 1.5x |
 | | C# | PLINQ, 256 chunks | 27 | 2.4x |
 | **serial-simd** | Rust | `std::arch` AVX | 67 | 1.0x |
 | | C# | `Vector256<double>` | 71 | 1.0x |
 | | SBCL | `sb-simd` `f64.4` | 74 | 1.1x |
 | **parallel-simd** | Rust | `std::arch` + rayon | 5 | 1.0x |
-| | SBCL | `sb-simd` + `sb-thread` | 6 | 1.2x |
+| | SBCL | `sb-simd` + `sb-thread` | 6 | 1.3x |
+| | SBCL | `sb-simd` + lparallel `pmap-reduce` | 8 | 1.6x |
 | | C# | `Vector256` + PLINQ | 14 | 2.6x |
 
 Best result per language, from its plain single-threaded loop to its fastest version:
@@ -111,7 +113,10 @@ core at different speeds, so splitting into 16 equal pieces leaves fast cores
 idle while slow ones finish; rayon's work stealing and 256-chunk queues avoid
 that. SBCL with lparallel's `pmap-reduce` over 256 chunks (40 ms) almost
 matches rayon, while the hand-rolled 16-thread split takes 66 ms with the same
-per-chunk loop. At 5–15 ms, fixed costs also show: thread-pool start-up, and for C#
+per-chunk loop. With the faster 8-accumulator and SIMD loops, lparallel is
+1–2 ms behind the hand-rolled `sb-thread` queue (17 vs 16 ms, 8 vs 6 ms),
+likely its fixed cost for creating the pool and scheduling tasks, which
+weighs more as the work shrinks. At 5–15 ms, fixed costs also show: thread-pool start-up, and for C#
 PLINQ set-up plus the JIT still optimizing the kernel during the timed run. PLINQ
 per element (287 ms) is slow because it processes a billion tiny items through
 generic iterator calls. Give it 256 chunks and it is fine.
@@ -251,7 +256,7 @@ and `(disassemble 'kernel)` in SBCL.
 | `sbcl/sum-opt.lisp` | 8 accumulators; parallel = threads pulling 256 chunks from an atomic counter |
 | `sbcl/sum-simd.lisp` | `sb-simd` `f64.4`; same parallel scheme |
 | `sbcl/experiments.lisp` | SBCL tuning experiments (double counter, 4/8 accumulators, chunk counts) |
-| `sbcl/sum-lparallel.lisp` | lparallel `pmap-reduce` over 256 chunks |
+| `sbcl/sum-lparallel.lisp` | lparallel `pmap-reduce` over 256 chunks with three kernels: plain loop, 8 accumulators, `sb-simd` |
 | `sbcl/lparallel-experiments.lisp` | lparallel styles compared (`pmap-reduce`, `preduce`, futures, `pmapcar`) |
 | `sbcl/build*.lisp` | Build each Lisp file into a standalone executable |
 | `run.sh` | Runs everything `RUNS` times and prints the comparison table |

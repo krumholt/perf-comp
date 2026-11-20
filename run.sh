@@ -30,7 +30,8 @@ for i in $(seq 1 "$RUNS"); do
   out=$(./sbcl/sum)
   record "SBCL" serial   "loop"                "$(echo "$out" | grep Serial)"
   record "SBCL" parallel "sb-thread x$(nproc)" "$(echo "$out" | grep Parallel)"
-  record "SBCL" parallel "lparallel pmap-reduce" "$(./sbcl/sum-lparallel)"
+  lp=$(./sbcl/sum-lparallel)
+  record "SBCL" parallel "lparallel pmap-reduce" "$(echo "$lp" | grep ^Plain)"
 
   # Optimized: same algorithm in all three (8 accumulators, 256 chunks)
   out=$(dotnet csharp-opt/out/perf.dll)
@@ -42,6 +43,7 @@ for i in $(seq 1 "$RUNS"); do
   out=$(./sbcl/sum-opt)
   record "SBCL" serial-8acc   "8 accumulators"      "$(echo "$out" | grep Serial)"
   record "SBCL" parallel-8acc "sb-thread 256 chunks" "$(echo "$out" | grep Parallel)"
+  record "SBCL" parallel-8acc "lparallel 256 chunks" "$(echo "$lp" | grep ^8acc)"
 
   # Explicit AVX SIMD: 4 x f64x4 accumulators in all three
   out=$(dotnet csharp-simd/out/perf.dll)
@@ -53,6 +55,7 @@ for i in $(seq 1 "$RUNS"); do
   out=$(./sbcl/sum-simd)
   record "SBCL" serial-simd   "sb-simd f64.4"       "$(echo "$out" | grep Serial)"
   record "SBCL" parallel-simd "sb-simd + sb-thread" "$(echo "$out" | grep Parallel)"
+  record "SBCL" parallel-simd "sb-simd + lparallel" "$(echo "$lp" | grep ^Simd)"
 
   echo done
 done
