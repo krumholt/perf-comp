@@ -21,7 +21,7 @@ For the shortest idiomatic version in each language, and what it costs, see
 |---|---|
 | C# | .NET 9.0 SDK, Release build, default tiered JIT |
 | Rust | rustc 1.100 stable, `--release` (no `target-cpu=native`) |
-| SBCL | 2.6.10 (official binary), `(optimize (speed 3) (safety 0))`, saved as an executable |
+| SBCL | 2.6.10 (official binary), `(optimize (speed 3) (safety 0))`, saved as an executable; lparallel 2.8.4 via Quicklisp |
 | Base image | `mcr.microsoft.com/dotnet/sdk:9.0-noble` (Ubuntu 24.04; SBCL 2.6.10 needs glibc ≥ 2.38) |
 | CPU | Intel Core Ultra X7 358H, AVX2 (no AVX-512), 16 cores: 4 P-cores @ 4.7 GHz, 8 E-cores @ 3.7 GHz, 4 low-power E-cores @ 3.3 GHz |
 
@@ -37,7 +37,8 @@ Times in ms; "vs best" compares each average to the fastest entry in the same gr
 | | C# | for loop in top-level `Main` (original) | 2159 | 4.5x |
 | **parallel** | Rust | rayon | 37 | 1.0x |
 | | C# | `Parallel.ForEach` + range partitioner | 43 | 1.1x |
-| | SBCL | `sb-thread` × 16, equal split | 68 | 1.8x |
+| | SBCL | lparallel `pmap-reduce`, 256 chunks | 40 | 1.1x |
+| | SBCL | `sb-thread` × 16, equal split | 66 | 1.7x |
 | | C# | PLINQ (per element) | 287 | 7.7x |
 | **serial-8acc** | Rust | 8 accumulators | 166 | 1.0x |
 | | SBCL | 8 accumulators | 237 | 1.4x |
@@ -248,6 +249,8 @@ and `(disassemble 'kernel)` in SBCL.
 | `sbcl/sum-opt.lisp` | 8 accumulators; parallel = threads pulling 256 chunks from an atomic counter |
 | `sbcl/sum-simd.lisp` | `sb-simd` `f64.4`; same parallel scheme |
 | `sbcl/experiments.lisp` | SBCL tuning experiments (double counter, 4/8 accumulators, chunk counts) |
+| `sbcl/sum-lparallel.lisp` | lparallel `pmap-reduce` over 256 chunks |
+| `sbcl/lparallel-experiments.lisp` | lparallel styles compared (`pmap-reduce`, `preduce`, futures, `pmapcar`) |
 | `sbcl/build*.lisp` | Build each Lisp file into a standalone executable |
 | `run.sh` | Runs everything `RUNS` times and prints the comparison table |
 | `jit-asm.sh` | Dumps the .NET JIT assembly for `csharp/` and `csharp-fn/` |

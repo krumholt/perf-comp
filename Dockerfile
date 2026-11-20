@@ -14,6 +14,14 @@ RUN curl -sSL -o /tmp/sbcl.tar.bz2 \
  && INSTALL_ROOT=/usr/local sh install.sh >/dev/null \
  && rm -rf /tmp/sbcl*
 
+# Quicklisp + lparallel, loaded into every SBCL via /root/.sbclrc
+RUN curl -sSL -o /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp \
+ && sbcl --non-interactive --load /tmp/quicklisp.lisp \
+         --eval '(quicklisp-quickstart:install :path "/opt/quicklisp/")' \
+         --eval '(ql:quickload :lparallel :silent t)' \
+ && echo '(load "/opt/quicklisp/setup.lisp")' > /root/.sbclrc \
+ && rm /tmp/quicklisp.lisp
+
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
 
@@ -37,6 +45,7 @@ RUN for d in jit-variants/*/; do (cd $d && dotnet build -c Release -o out --nolo
 RUN cd rust && cargo build --release -q
 RUN cd sbcl && sbcl --non-interactive --load build.lisp \
  && sbcl --non-interactive --load build-opt.lisp \
- && sbcl --non-interactive --load build-simd.lisp
+ && sbcl --non-interactive --load build-simd.lisp \
+ && sbcl --non-interactive --load build-lparallel.lisp
 
 CMD ["./run.sh"]

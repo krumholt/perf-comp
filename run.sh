@@ -30,6 +30,7 @@ for i in $(seq 1 "$RUNS"); do
   out=$(./sbcl/sum)
   record "SBCL" serial   "loop"                "$(echo "$out" | grep Serial)"
   record "SBCL" parallel "sb-thread x$(nproc)" "$(echo "$out" | grep Parallel)"
+  record "SBCL" parallel "lparallel pmap-reduce" "$(./sbcl/sum-lparallel)"
 
   # Optimized: same algorithm in all three (8 accumulators, 256 chunks)
   out=$(dotnet csharp-opt/out/perf.dll)
@@ -70,10 +71,10 @@ awk -F'|' -v runs="$RUNS" '
       key = order[k]; split(key, p, "|"); avg[key] = total[key] / runs
       if (!(p[1] in best) || avg[key] < best[p[1]]) best[p[1]] = avg[key]
     }
-    line = "+---------------+--------+----------------------+"
+    line = "+---------------+--------+------------------------+"
     for (r = 1; r <= runs; r++) line = line "--------+"
     line = line "---------+---------+---------+"
-    hdr = sprintf("| %-13s | %-6s | %-20s |", "Mode", "Lang", "Variant")
+    hdr = sprintf("| %-13s | %-6s | %-22s |", "Mode", "Lang", "Variant")
     for (r = 1; r <= runs; r++) hdr = hdr sprintf(" %6s |", "Run " r)
     hdr = hdr sprintf(" %7s | %7s | %7s |", "Total", "Avg", "vs best")
 
@@ -88,7 +89,7 @@ awk -F'|' -v runs="$RUNS" '
         if (avg[rows[b]] < avg[rows[a]]) { tmp = rows[a]; rows[a] = rows[b]; rows[b] = tmp }
       for (a = 1; a <= c; a++) {
         key = rows[a]; split(key, p, "|")
-        row = sprintf("| %-13s | %-6s | %-20s |", p[1], p[2], p[3])
+        row = sprintf("| %-13s | %-6s | %-22s |", p[1], p[2], p[3])
         for (r = 1; r <= runs; r++) row = row sprintf(" %6d |", t[key, r])
         row = row sprintf(" %7d | %7.0f | %6.1fx |", total[key], avg[key], avg[key] / best[p[1]])
         print row
@@ -98,7 +99,7 @@ awk -F'|' -v runs="$RUNS" '
     print "Times in ms. \"vs best\" = average relative to the fastest in the same mode."
     print ""
     print "Sum results (exact answer is 500000000500000000):"
-    for (k = 1; k <= n; k++) { split(order[k], p, "|"); printf "  %-5s %-13s %-20s %s\n", p[2], p[1], p[3], sum[order[k]] }
+    for (k = 1; k <= n; k++) { split(order[k], p, "|"); printf "  %-5s %-13s %-22s %s\n", p[2], p[1], p[3], sum[order[k]] }
   }
 ' "$RESULTS"
 
