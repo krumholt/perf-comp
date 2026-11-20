@@ -27,41 +27,59 @@ For the shortest idiomatic version in each language, and what it costs, see
 
 ## Results
 
-Times in ms; "vs best" compares each average to the fastest entry in the same group.
+Times in ms (average of 3 runs, on AC power); "vs best" compares each average
+to the fastest entry in the same group. See [How it is measured](#how-it-is-measured).
 
 | Group | Lang | Variant | Avg (ms) | vs best |
 |---|---|---|---:|---:|
-| **serial** | Rust | `iter().sum()` | 478 | 1.0x |
-| | C# | for loop in its own method | 486 | 1.0x |
-| | SBCL | `loop` | 584 | 1.2x |
-| | C# | for loop in top-level `Main` (original) | 2159 | 4.5x |
+| **serial** | Rust | `iter().sum()` | 466 | 1.0x |
+| | C# | for loop in its own method | 479 | 1.0x |
+| | SBCL | `loop` | 558 | 1.2x |
+| | C# | for loop in top-level `Main` (original) | 2144 | 4.6x |
 | **parallel** | Rust | rayon | 37 | 1.0x |
-| | C# | `Parallel.ForEach` + range partitioner | 43 | 1.1x |
 | | SBCL | lparallel `pmap-reduce`, 256 chunks | 40 | 1.1x |
-| | SBCL | `sb-thread` × 16, equal split | 66 | 1.7x |
-| | C# | PLINQ (per element) | 287 | 7.7x |
-| **serial-8acc** | Rust | 8 accumulators | 166 | 1.0x |
-| | SBCL | 8 accumulators | 237 | 1.4x |
-| | C# | 8 accumulators | 242 | 1.5x |
+| | C# | `Parallel.ForEach` + range partitioner | 43 | 1.2x |
+| | SBCL | `sb-thread` × 16, equal split | 70 | 1.9x |
+| | C# | PLINQ (per element) | 283 | 7.6x |
+| **serial-8acc** | Rust | 8 accumulators | 173 | 1.0x |
+| | C# | 8 accumulators | 249 | 1.4x |
+| | SBCL | 8 accumulators | 249 | 1.4x |
 | **parallel-8acc** | Rust | rayon, 256 chunks | 11 | 1.0x |
-| | SBCL | `sb-thread`, 256 chunks | 16 | 1.4x |
-| | SBCL | lparallel `pmap-reduce`, 256 chunks | 17 | 1.5x |
-| | C# | PLINQ, 256 chunks | 27 | 2.4x |
-| **serial-simd** | Rust | `std::arch` AVX | 67 | 1.0x |
-| | C# | `Vector256<double>` | 71 | 1.0x |
-| | SBCL | `sb-simd` `f64.4` | 74 | 1.1x |
+| | SBCL | `sb-thread`, 256 chunks | 17 | 1.6x |
+| | SBCL | lparallel `pmap-reduce`, 256 chunks | 17 | 1.6x |
+| | C# | PLINQ, 256 chunks | 25 | 2.3x |
+| **serial-simd** | Rust | `std::arch` AVX | 55 | 1.0x |
+| | SBCL | `sb-simd` `f64.4` | 60 | 1.1x |
+| | C# | `Vector256<double>` | 62 | 1.1x |
 | **parallel-simd** | Rust | `std::arch` + rayon | 5 | 1.0x |
-| | SBCL | `sb-simd` + `sb-thread` | 6 | 1.3x |
-| | SBCL | `sb-simd` + lparallel `pmap-reduce` | 8 | 1.6x |
-| | C# | `Vector256` + PLINQ | 14 | 2.6x |
+| | SBCL | `sb-simd` + `sb-thread` | 6 | 1.2x |
+| | SBCL | `sb-simd` + lparallel `pmap-reduce` | 7 | 1.4x |
+| | C# | `Vector256` + PLINQ | 13 | 2.6x |
 
 Best result per language, from its plain single-threaded loop to its fastest version:
 
 | Lang | plain serial | best | speed-up |
 |---|---:|---:|---:|
-| Rust | 478 | 5 | ~95x |
-| SBCL | 584 | 6 | ~95x |
-| C# | 2159 (486 in a method) | 14 | ~150x |
+| Rust | 466 | 5 | ~95x |
+| SBCL | 558 | 6 | ~95x |
+| C# | 2144 (479 in a method) | 13 | ~165x |
+
+### How it is measured
+
+`run.sh` sets up each measurement so the table reflects the code, not the
+CPU's power management:
+
+- **Serial entries** run pinned to the fastest core (`taskset`; CPU 2 here),
+  after a 100 ms busy-wait on that core. Idle cores sit at 400 MHz; without
+  the warm-up, a program that starts its hot loop immediately pays for the
+  clock ramp-up inside the timed region (the SIMD kernels measured 4–10 ms
+  slower cold), and an unpinned run can land on a slower E-core.
+- **Parallel entries** are a separate run of the same program, after a
+  100 ms busy-wait on all cores.
+- `WARMUP=0` disables the warm-up; `WARMUP=0.3` lengthens it.
+
+**Run on AC power.** On battery this laptop caps its clock and every result
+is ~15–20% slower (e.g. Rust serial 566 ms instead of 466).
 
 ## What the groups mean
 
@@ -102,23 +120,27 @@ the exact answer `500000000500000000`.
 **4. Rust's remaining lead in `-8acc` comes from its compiler (LLVM)
 auto-vectorizing.** Given 8 independent accumulators, LLVM packs them into
 2-wide SSE2 registers (`addpd` in the binary); the .NET JIT and SBCL keep one
-double per instruction (`addsd`). That is the whole 166 vs ~240 ms gap.
+double per instruction (`addsd`). That is the whole 173 vs 249 ms gap.
 
 **5. With explicit SIMD the languages are within 10%.** Once the program
-spells out the vector instructions, Rust (`std::arch`), C# (`Vector256`) and
-SBCL (`sb-simd`) all run a loop of `vaddpd ymm` instructions at ~70 ms.
+spells out the vector instructions, Rust (`std::arch`, 55 ms), SBCL
+(`sb-simd`, 60 ms) and C# (`Vector256`, 62 ms) all run a loop of `vaddpd ymm`
+instructions. SBCL's loop has a few extra register copies and constant
+reloads; `sbcl/push-experiments.lisp` shows that removing them barely
+matters, and that 8 vector accumulators are slower because they need more
+than the 16 AVX registers.
 
 **6. In parallel, scheduling overhead matters.** This CPU has three kinds of
 core at different speeds, so splitting into 16 equal pieces leaves fast cores
 idle while slow ones finish; rayon's work stealing and 256-chunk queues avoid
 that. SBCL with lparallel's `pmap-reduce` over 256 chunks (40 ms) almost
-matches rayon, while the hand-rolled 16-thread split takes 66 ms with the same
-per-chunk loop. With the faster 8-accumulator and SIMD loops, lparallel is
-1–2 ms behind the hand-rolled `sb-thread` queue (17 vs 16 ms, 8 vs 6 ms),
+matches rayon, while the hand-rolled 16-thread split takes 70 ms with the same
+per-chunk loop. With the faster 8-accumulator and SIMD loops, lparallel ties
+or trails the hand-rolled `sb-thread` queue by ~1 ms (17 vs 17 ms, 7 vs 6 ms),
 likely its fixed cost for creating the pool and scheduling tasks, which
 weighs more as the work shrinks. At 5–15 ms, fixed costs also show: thread-pool start-up, and for C#
 PLINQ set-up plus the JIT still optimizing the kernel during the timed run. PLINQ
-per element (287 ms) is slow because it processes a billion tiny items through
+per element (283 ms) is slow because it processes a billion tiny items through
 generic iterator calls. Give it 256 chunks and it is fine.
 
 **In short:** Rust has no runtime, no JIT warm-up and no tagged integers, and
@@ -256,10 +278,11 @@ and `(disassemble 'kernel)` in SBCL.
 | `sbcl/sum-opt.lisp` | 8 accumulators; parallel = threads pulling 256 chunks from an atomic counter |
 | `sbcl/sum-simd.lisp` | `sb-simd` `f64.4`; same parallel scheme |
 | `sbcl/experiments.lisp` | SBCL tuning experiments (double counter, 4/8 accumulators, chunk counts) |
+| `sbcl/push-experiments.lisp` | Macro-generated SIMD kernel variants with inner-loop instruction counts |
 | `sbcl/sum-lparallel.lisp` | lparallel `pmap-reduce` over 256 chunks with three kernels: plain loop, 8 accumulators, `sb-simd` |
 | `sbcl/lparallel-experiments.lisp` | lparallel styles compared (`pmap-reduce`, `preduce`, futures, `pmapcar`) |
 | `sbcl/build*.lisp` | Build each Lisp file into a standalone executable |
-| `run.sh` | Runs everything `RUNS` times and prints the comparison table |
+| `run.sh` | Runs everything `RUNS` times (serial pinned to the fastest core, with CPU warm-up) and prints the comparison table |
 | `jit-asm.sh` | Dumps the .NET JIT assembly for `csharp/` and `csharp-fn/` |
 | `asm/` | Saved JIT listings |
 | `beauty-competition.md` | The most succinct version in each language, timed |
@@ -269,10 +292,11 @@ and `(disassemble 'kernel)` in SBCL.
 ## Caveats
 
 - Timings are wall-clock from inside each program and include thread-pool
-  start-up; there is no warm-up run.
+  start-up and, for C#, JIT compilation; there is no in-process warm-up run,
+  only the CPU warm-up described in [How it is measured](#how-it-is-measured).
 - Floating-point sums differ between variants because addition order differs;
   the exact answer is 500000000500000000.
 - Rust is built for generic x86-64; its `-8acc` version uses SSE2. The explicit
   SIMD versions check for AVX (Rust/C#) or require it (SBCL `sb-simd-avx`).
-- The OS decides which core type each thread runs on, which adds some
-  run-to-run noise, mostly in the parallel numbers.
+- For parallel runs the OS decides which core type each thread runs on,
+  which adds some run-to-run noise.

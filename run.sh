@@ -1,8 +1,32 @@
 #!/bin/sh
 # Runs every benchmark RUNS times, then prints a comparison table.
+#
+# Measurement setup (so the table shows the code, not the CPU's power
+# management):
+#   serial entries   - the program is pinned to the fastest core (taskset),
+#                      after a 100 ms busy-wait on that core so its clock has
+#                      ramped up
+#   parallel entries - a separate run, after a 100 ms busy-wait on all cores
+# Programs that print both a serial and a parallel result are run twice and
+# each line is taken from the run set up for it.
 set -e
 RUNS=${RUNS:-3}
+WARMUP=${WARMUP:-0.1}
 RESULTS=$(mktemp)
+
+# Fastest core by max frequency (falls back to CPU 0 if cpufreq is missing)
+FAST=$(for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/cpuinfo_max_freq; do
+         [ -r "$f" ] && echo "$(cat "$f") $(echo "$f" | sed 's|.*/cpu\([0-9]*\)/.*|\1|')"
+       done | sort -n -k1,1 -k2,2r | tail -n1 | cut -d' ' -f2)
+FAST=${FAST:-0}
+
+spin() {   # busy-wait on CPU $1 for $WARMUP seconds (0 = no warm-up)
+  case "$WARMUP" in 0|0.0|"") return 0 ;; esac
+  taskset -c "$1" timeout "$WARMUP" sh -c 'while :; do :; done' || true
+}
+spin_all() { c=0; while [ "$c" -lt "$(nproc)" ]; do spin "$c" & c=$((c+1)); done; wait; }
+serial()   { spin "$FAST"; taskset -c "$FAST" "$@"; }
+parallel() { spin_all; "$@"; }
 
 # Pull the "<n> ms" timing out of a program's output line.
 ms() { sed -n 's/.*Sum Time:\{0,1\} \([0-9][0-9]*\) ms.*/\1/p' | head -n1; }
@@ -13,49 +37,44 @@ val() { sed -n 's/.*Sum: \([^ ,]*\).*/\1/p' | head -n1; }
 record() { printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$(echo "$4" | ms)" "$(echo "$4" | val)" >> "$RESULTS"; }
 
 echo "dotnet $(dotnet --version) | $(rustc --version | cut -d' ' -f1-2) | $(sbcl --version) | $(nproc) CPUs"
+echo "serial runs pinned to CPU $FAST; ${WARMUP}s warm-up before every run"
 echo
 
 for i in $(seq 1 "$RUNS"); do
   printf 'Run %d/%d ... ' "$i" "$RUNS"
 
-  record "C#"   serial   "for loop"            "$(dotnet csharp/out/perf.dll)"
-  record "C#"   serial   "for loop in method"  "$(dotnet csharp-fn/out/perf.dll)"
-  out=$(dotnet csharp-parallel/out/perf.dll)
-  record "C#"   parallel "PLINQ"               "$(echo "$out" | grep PLINQ)"
-  record "C#"   parallel "Parallel.ForEach"    "$(echo "$out" | grep Partitioner)"
+  # Original programs
+  record "C#"   serial   "for loop"              "$(serial dotnet csharp/out/perf.dll)"
+  record "C#"   serial   "for loop in method"    "$(serial dotnet csharp-fn/out/perf.dll)"
+  out=$(parallel dotnet csharp-parallel/out/perf.dll)
+  record "C#"   parallel "PLINQ"                 "$(echo "$out" | grep PLINQ)"
+  record "C#"   parallel "Parallel.ForEach"      "$(echo "$out" | grep Partitioner)"
 
-  record "Rust" serial   "iter().sum()"        "$(./rust/target/release/serial)"
-  record "Rust" parallel "rayon"               "$(./rust/target/release/perf)"
+  record "Rust" serial   "iter().sum()"          "$(serial ./rust/target/release/serial)"
+  record "Rust" parallel "rayon"                 "$(parallel ./rust/target/release/perf)"
 
-  out=$(./sbcl/sum)
-  record "SBCL" serial   "loop"                "$(echo "$out" | grep Serial)"
-  record "SBCL" parallel "sb-thread x$(nproc)" "$(echo "$out" | grep Parallel)"
-  lp=$(./sbcl/sum-lparallel)
+  record "SBCL" serial   "loop"                  "$(serial ./sbcl/sum | grep Serial)"
+  record "SBCL" parallel "sb-thread x$(nproc)"   "$(parallel ./sbcl/sum | grep Parallel)"
+  lp=$(parallel ./sbcl/sum-lparallel)
   record "SBCL" parallel "lparallel pmap-reduce" "$(echo "$lp" | grep ^Plain)"
 
   # Optimized: same algorithm in all three (8 accumulators, 256 chunks)
-  out=$(dotnet csharp-opt/out/perf.dll)
-  record "C#"   serial-8acc   "8 accumulators"      "$(echo "$out" | grep Serial)"
-  record "C#"   parallel-8acc "PLINQ 256 chunks"    "$(echo "$out" | grep Parallel)"
-  out=$(./rust/target/release/opt)
-  record "Rust" serial-8acc   "8 accumulators"      "$(echo "$out" | grep Serial)"
-  record "Rust" parallel-8acc "rayon 256 chunks"    "$(echo "$out" | grep Parallel)"
-  out=$(./sbcl/sum-opt)
-  record "SBCL" serial-8acc   "8 accumulators"      "$(echo "$out" | grep Serial)"
-  record "SBCL" parallel-8acc "sb-thread 256 chunks" "$(echo "$out" | grep Parallel)"
+  record "C#"   serial-8acc   "8 accumulators"       "$(serial dotnet csharp-opt/out/perf.dll | grep Serial)"
+  record "C#"   parallel-8acc "PLINQ 256 chunks"     "$(parallel dotnet csharp-opt/out/perf.dll | grep Parallel)"
+  record "Rust" serial-8acc   "8 accumulators"       "$(serial ./rust/target/release/opt | grep Serial)"
+  record "Rust" parallel-8acc "rayon 256 chunks"     "$(parallel ./rust/target/release/opt | grep Parallel)"
+  record "SBCL" serial-8acc   "8 accumulators"       "$(serial ./sbcl/sum-opt | grep Serial)"
+  record "SBCL" parallel-8acc "sb-thread 256 chunks" "$(parallel ./sbcl/sum-opt | grep Parallel)"
   record "SBCL" parallel-8acc "lparallel 256 chunks" "$(echo "$lp" | grep ^8acc)"
 
   # Explicit AVX SIMD: 4 x f64x4 accumulators in all three
-  out=$(dotnet csharp-simd/out/perf.dll)
-  record "C#"   serial-simd   "Vector256"           "$(echo "$out" | grep Serial)"
-  record "C#"   parallel-simd "Vector256 + PLINQ"   "$(echo "$out" | grep Parallel)"
-  out=$(./rust/target/release/simd)
-  record "Rust" serial-simd   "std::arch AVX"       "$(echo "$out" | grep Serial)"
-  record "Rust" parallel-simd "std::arch + rayon"   "$(echo "$out" | grep Parallel)"
-  out=$(./sbcl/sum-simd)
-  record "SBCL" serial-simd   "sb-simd f64.4"       "$(echo "$out" | grep Serial)"
-  record "SBCL" parallel-simd "sb-simd + sb-thread" "$(echo "$out" | grep Parallel)"
-  record "SBCL" parallel-simd "sb-simd + lparallel" "$(echo "$lp" | grep ^Simd)"
+  record "C#"   serial-simd   "Vector256"            "$(serial dotnet csharp-simd/out/perf.dll | grep Serial)"
+  record "C#"   parallel-simd "Vector256 + PLINQ"    "$(parallel dotnet csharp-simd/out/perf.dll | grep Parallel)"
+  record "Rust" serial-simd   "std::arch AVX"        "$(serial ./rust/target/release/simd | grep Serial)"
+  record "Rust" parallel-simd "std::arch + rayon"    "$(parallel ./rust/target/release/simd | grep Parallel)"
+  record "SBCL" serial-simd   "sb-simd f64.4"        "$(serial ./sbcl/sum-simd | grep Serial)"
+  record "SBCL" parallel-simd "sb-simd + sb-thread"  "$(parallel ./sbcl/sum-simd | grep Parallel)"
+  record "SBCL" parallel-simd "sb-simd + lparallel"  "$(echo "$lp" | grep ^Simd)"
 
   echo done
 done
