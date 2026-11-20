@@ -25,13 +25,15 @@ COPY csharp-simd ./csharp-simd
 COPY csharp-fn ./csharp-fn
 COPY rust ./rust
 COPY sbcl ./sbcl
-COPY run.sh jit-asm.sh ./
+COPY jit-variants ./jit-variants
+COPY run.sh jit-asm.sh jit-variants.sh ./
 
 RUN cd csharp && dotnet build -c Release -o out --nologo -v q
 RUN cd csharp-parallel && dotnet build -c Release -o out --nologo -v q
 RUN cd csharp-opt && dotnet build -c Release -o out --nologo -v q
 RUN cd csharp-simd && dotnet build -c Release -o out --nologo -v q
 RUN cd csharp-fn && dotnet build -c Release -o out --nologo -v q
+RUN for d in jit-variants/*/; do (cd $d && dotnet build -c Release -o out --nologo -v q) || exit 1; done
 RUN cd rust && cargo build --release -q
 RUN cd sbcl && sbcl --non-interactive --load build.lisp \
  && sbcl --non-interactive --load build-opt.lisp \
