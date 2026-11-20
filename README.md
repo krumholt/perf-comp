@@ -12,6 +12,9 @@ docker run --rm perf-comp              # 3 runs of everything + comparison table
 docker run --rm -e RUNS=5 perf-comp    # more runs
 ```
 
+For the shortest idiomatic version in each language, and what it costs, see
+[beauty-competition.md](beauty-competition.md).
+
 ## Toolchain and machine
 
 | | |
@@ -249,6 +252,7 @@ and `(disassemble 'kernel)` in SBCL.
 | `run.sh` | Runs everything `RUNS` times and prints the comparison table |
 | `jit-asm.sh` | Dumps the .NET JIT assembly for `csharp/` and `csharp-fn/` |
 | `asm/` | Saved JIT listings |
+| `beauty-competition.md` | The most succinct version in each language, timed |
 | `jit-variants/` | Four small C# programs isolating the JIT problem |
 | `jit-variants.sh` | Runs them under default and FullOpts JIT settings |
 
