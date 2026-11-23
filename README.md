@@ -1,8 +1,10 @@
-# perf-comp: C# vs Rust vs SBCL
+# perf-comp: C# vs Rust vs SBCL (and Java)
 
 Sum the integers 1..1,000,000,000 as double-precision floats, in C#, Rust and
 SBCL (Common Lisp), going from a plain loop to explicit SIMD, single-threaded
-and parallel.
+and parallel. Java is in the serial and parallel groups only, starting from a
+parallel-stream program; see
+[Why the Java version is slow](#why-the-java-version-is-slow).
 
 Everything builds and runs in one Docker image:
 
@@ -21,6 +23,7 @@ For the shortest idiomatic version in each language, and what it costs, see
 |---|---|
 | C# | .NET 9.0 SDK, Release build, default tiered JIT |
 | Rust | rustc 1.100 stable, `--release` (no `target-cpu=native`) |
+| Java | OpenJDK 25.0.5.1 (Ubuntu package), default JVM flags (tiered C1/C2 JIT) |
 | SBCL | 2.6.10 (official binary), `(optimize (speed 3) (safety 0))`, saved as an executable; lparallel 2.8.4 via Quicklisp |
 | Base image | `mcr.microsoft.com/dotnet/sdk:9.0-noble` (Ubuntu 24.04; SBCL 2.6.10 needs glibc ≥ 2.38) |
 | CPU | Intel Core Ultra X7 358H, AVX2 (no AVX-512), 16 cores: 4 P-cores @ 4.7 GHz, 8 E-cores @ 3.7 GHz, 4 low-power E-cores @ 3.3 GHz |
@@ -34,12 +37,17 @@ to the fastest entry in the same group. See [How it is measured](#how-it-is-meas
 |---|---|---|---:|---:|
 | **serial** | Rust | `iter().sum()` | 466 | 1.0x |
 | | C# | for loop in its own method | 479 | 1.0x |
+| | Java | sequential stream, `reduce(0.0, Double::sum)` | 493 | 1.1x |
 | | SBCL | `loop` | 558 | 1.2x |
+| | Java | sequential stream, `sum()` | 1963 | 4.2x |
 | | C# | for loop in top-level `Main` (original) | 2144 | 4.6x |
+| | Java | for loop in a method called once | 2755 | 5.9x |
 | **parallel** | Rust | rayon | 37 | 1.0x |
 | | SBCL | lparallel `pmap-reduce`, 256 chunks | 40 | 1.1x |
 | | C# | `Parallel.ForEach` + range partitioner | 43 | 1.2x |
 | | SBCL | `sb-thread` × 16, equal split | 70 | 1.9x |
+| | Java | parallel stream, `reduce(0.0, Double::sum)` | 172 | 4.6x |
+| | Java | parallel stream, `sum()` (original) | 279 | 7.5x |
 | | C# | PLINQ (per element) | 283 | 7.6x |
 | **serial-8acc** | Rust | 8 accumulators | 173 | 1.0x |
 | | C# | 8 accumulators | 249 | 1.4x |
@@ -63,6 +71,7 @@ Best result per language, from its plain single-threaded loop to its fastest ver
 | Rust | 466 | 5 | ~95x |
 | SBCL | 558 | 6 | ~95x |
 | C# | 2144 (479 in a method) | 13 | ~165x |
+| Java | 2755 (493 as a stream) | 172 | ~16x (no `-8acc`/SIMD versions) |
 
 ### How it is measured
 
@@ -261,6 +270,130 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/asm:/out" perf-
 The other languages' code can be inspected with `objdump -d rust/target/release/<bin>`
 and `(disassemble 'kernel)` in SBCL.
 
+## Why the Java version is slow
+
+The Java program (`java/SumInt.java`) is the parallel-stream version of the
+benchmark:
+
+```java
+double sum = IntStream.range(1, 1_000_000_000 + 1).parallel().mapToDouble(i -> (double) i).sum();
+```
+
+It takes **279 ms**, against 37–43 ms for rayon, lparallel and
+`Parallel.ForEach`. That is about the same as C# PLINQ (283 ms), but for
+different reasons: PLINQ pays per-element iterator overhead. Java's time comes
+from two separate costs, each worth over 100 ms. Parallel streams themselves
+are not slow:
+
+| | `sum()` | `reduce(0.0, Double::sum)` |
+|---|---:|---:|
+| parallel, first run in a fresh JVM (as in the table) | 279 ms | 172 ms |
+| parallel, steady state (runs 2–5 in the same JVM) | 185 ms | 44 ms |
+| sequential stream, pinned to one core | 1963 ms | 493 ms |
+| same arithmetic as a hand-written loop, already compiled | 1738 ms | 483 ms |
+
+Reproduce with `docker run --rm perf-comp ./java-experiments.sh`.
+
+### 1. `DoubleStream.sum()` uses compensated summation
+
+`DoubleStream.sum()` doesn't just add. Per element, it does Kahan summation
+(`Collectors.sumWithCompensation`) and also keeps a second, plain sum, which is
+used if the result is infinite. All three values live in a `double[3]` on the heap
+(`DoublePipeline.sum()`; `javap -c -p java.util.stream.DoublePipeline` shows
+the call):
+
+```java
+double y = d - c;          // c: the rounding error carried over so far
+double t = hi + y;
+c = (t - hi) - y;          // the part of y that didn't make it into t
+hi = t;
+simple += d;
+```
+
+That turns one addition per element into four that depend on each other, all
+on the chain that runs from one element to the next. Written out as a loop over
+locals, it takes 1738 ms against 483 ms for the plain loop (3.6×). The
+stream's version is another ~13% slower (1963 ms) because its state lives in
+the array. In parallel, the same costs 185 ms instead of 44 ms once compiled.
+
+The extra work does buy accuracy. Sequential `sum()` returns the exact
+`500000000500000000`, as the 8-accumulator and SIMD versions do, while a plain
+running sum gives `500000000067109000`. The Javadoc allows this ("may be
+implemented using compensated summation"). Unlike C#'s LINQ `Sum` and Rust's
+`sum()`, Java does it by default. `reduce(0.0, Double::sum)` is the plain sum.
+
+### 2. JIT warm-up inside the timed region
+
+Once compiled, the parallel `reduce` version takes 44 ms, close to C#
+`Parallel.ForEach` (43 ms) and rayon (37 ms). Its first run in a fresh JVM,
+which is what the table measures, takes 153–264 ms (172 ms on average in the table).
+`-XX:+PrintCompilation` shows why. The stream's inner loop,
+`Streams$RangeIntSpliterator::forEachRemaining`, goes through these stages
+(times in ms since the JVM started):
+
+```
+ 28  C1 with profiling (tier 3), OSR and normal entry
+ 94  C2 (tier 4) OSR version installed
+118  C2 OSR version discarded ("made not entrant: uncommon trap"), threads fall back to slower code
+178  C2 OSR version compiled again
+188  C2 normal-entry version
+```
+
+For roughly the first 100 ms, the 16 threads run slower code. The range is
+split into chunks of about 15 million elements. A thread that is partway
+through a chunk can only switch to better code at a loop back-edge, through
+on-stack replacement (OSR). C1 code is slow for this loop: with C2 turned off
+(`-XX:TieredStopAtLevel=1`) the whole sum takes 259 ms. Turning tiering off
+(`-XX:-TieredCompilation`, interpreter then straight to C2) cuts the first run
+to 67 ms. JVM start-up itself isn't timed. Creating the common fork-join pool
+and bootstrapping the lambda cost about 11 ms.
+
+So the 279 ms breaks down as roughly 279 → 172 ms without the compensated sum,
+then 172 → 44 ms once the JIT has finished.
+
+### Side finding: the plain `for` loop is 6× slower when called once
+
+A plain loop in a method that is called once takes **2755 ms**, slower than
+the original C#:
+
+```java
+static double loop(int n) { double s = 0; for (int i = 1; i <= n; i++) s += i; return s; }
+```
+
+The same method takes 483 ms once C2 has compiled it normally (`Variants
+loop-warm` calls it 20,000 times with a short range first). Called only once,
+it runs as C2's OSR version from start to finish. This is the same type of
+problem as the C# one: a code-generation detail puts extra latency on the
+chain of additions. `asm/java-loop-osr.asm` (from `./java-asm.sh`):
+
+```asm
+loop:
+  mov       r10, [r15+0x30]
+  vmovq     rbp, xmm0          ; <-- sum moved to a general-purpose register
+  vpxor     xmm0, xmm0, xmm0
+  vcvtsi2sd xmm0, xmm0, ebx    ; (double)i
+  vmovq     xmm1, rbp          ; <-- and back to an XMM register
+  vaddsd    xmm0, xmm1, xmm0   ; sum += i
+  inc       ebx
+  test      [r10], eax         ; safepoint poll, every iteration
+  cmp       ebx, r13d
+  jle       loop
+```
+
+The normally compiled version (`asm/java-loop-method.asm`) unrolls the loop
+16× and keeps `sum` in `xmm0`. That is about 2.3 cycles per element, against
+about 13 for the OSR version. OSR alone is not the cause: the sequential stream
+also runs its whole loop as OSR code and takes 493 ms. What decides it is how
+C2 allocates registers for this particular loop. That is read from the machine
+code, not checked against C2's source. Turning off loop strip mining, unrolling
+or partial peeling doesn't change it, and neither does turning off tiering.
+
+**Takeaway for Java:** `DoubleStream.sum()` is the accurate sum, not the fast
+one; use `reduce(0.0, Double::sum)` when speed matters more than the last few
+digits. A single timed run includes JIT warm-up, and a long loop that runs only
+once never gets the normally compiled code. Repeat the measurement in the same
+JVM, or use JMH, when you want steady-state numbers.
+
 ## Project layout
 
 | Path | What |
@@ -281,10 +414,14 @@ and `(disassemble 'kernel)` in SBCL.
 | `sbcl/push-experiments.lisp` | Macro-generated SIMD kernel variants with inner-loop instruction counts |
 | `sbcl/sum-lparallel.lisp` | lparallel `pmap-reduce` over 256 chunks with three kernels: plain loop, 8 accumulators, `sb-simd` |
 | `sbcl/lparallel-experiments.lisp` | lparallel styles compared (`pmap-reduce`, `preduce`, futures, `pmapcar`) |
+| `java/SumInt.java` | Original Java program (parallel stream + `DoubleStream.sum()`) |
+| `java/Variants.java` | Java variants: sequential/parallel × `sum()`/`reduce()`, plain loop (cold and warm), hand-written Kahan loop |
+| `java-experiments.sh` | Runs the Java experiments behind [Why the Java version is slow](#why-the-java-version-is-slow) |
+| `java-asm.sh` | Dumps C2's machine code for the Java loop (OSR and normal) via hsdis |
 | `sbcl/build*.lisp` | Build each Lisp file into a standalone executable |
 | `run.sh` | Runs everything `RUNS` times (serial pinned to the fastest core, with CPU warm-up) and prints the comparison table |
 | `jit-asm.sh` | Dumps the .NET JIT assembly for `csharp/` and `csharp-fn/` |
-| `asm/` | Saved JIT listings |
+| `asm/` | Saved JIT listings (.NET and Java) |
 | `beauty-competition.md` | The most succinct version in each language, timed |
 | `jit-variants/` | Four small C# programs isolating the JIT problem |
 | `jit-variants.sh` | Runs them under default and FullOpts JIT settings |
@@ -292,7 +429,7 @@ and `(disassemble 'kernel)` in SBCL.
 ## Caveats
 
 - Timings are wall-clock from inside each program and include thread-pool
-  start-up and, for C#, JIT compilation; there is no in-process warm-up run,
+  start-up and, for C# and Java, JIT compilation; there is no in-process warm-up run,
   only the CPU warm-up described in [How it is measured](#how-it-is-measured).
 - Floating-point sums differ between variants because addition order differs;
   the exact answer is 500000000500000000.

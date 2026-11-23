@@ -25,6 +25,11 @@ RUN curl -sSL -o /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp \
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
 
+# Java (OpenJDK 25) and hsdis, so the JIT can print its machine code (java-asm.sh)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openjdk-25-jdk-headless libhsdis0-fcml \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /bench
 COPY csharp ./csharp
 COPY csharp-parallel ./csharp-parallel
@@ -33,8 +38,9 @@ COPY csharp-simd ./csharp-simd
 COPY csharp-fn ./csharp-fn
 COPY rust ./rust
 COPY sbcl ./sbcl
+COPY java ./java
 COPY jit-variants ./jit-variants
-COPY run.sh jit-asm.sh jit-variants.sh ./
+COPY run.sh jit-asm.sh jit-variants.sh java-experiments.sh java-asm.sh ./
 
 RUN cd csharp && dotnet build -c Release -o out --nologo -v q
 RUN cd csharp-parallel && dotnet build -c Release -o out --nologo -v q
@@ -43,6 +49,7 @@ RUN cd csharp-simd && dotnet build -c Release -o out --nologo -v q
 RUN cd csharp-fn && dotnet build -c Release -o out --nologo -v q
 RUN for d in jit-variants/*/; do (cd $d && dotnet build -c Release -o out --nologo -v q) || exit 1; done
 RUN cd rust && cargo build --release -q
+RUN cd java && javac -d out *.java
 RUN cd sbcl && sbcl --non-interactive --load build.lisp \
  && sbcl --non-interactive --load build-opt.lisp \
  && sbcl --non-interactive --load build-simd.lisp \

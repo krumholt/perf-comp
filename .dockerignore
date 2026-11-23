@@ -7,3 +7,4 @@ sbcl/sum
 sbcl/sum-opt
 sbcl/sum-simd
 sbcl/sum-lparallel
+java/out/

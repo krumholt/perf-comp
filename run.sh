@@ -36,7 +36,7 @@ val() { sed -n 's/.*Sum: \([^ ,]*\).*/\1/p' | head -n1; }
 # record <language> <mode> <variant> <program output line>
 record() { printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$(echo "$4" | ms)" "$(echo "$4" | val)" >> "$RESULTS"; }
 
-echo "dotnet $(dotnet --version) | $(rustc --version | cut -d' ' -f1-2) | $(sbcl --version) | $(nproc) CPUs"
+echo "dotnet $(dotnet --version) | java $(java -version 2>&1 | head -n1 | cut -d\" -f2) | $(rustc --version | cut -d' ' -f1-2) | $(sbcl --version) | $(nproc) CPUs"
 echo "serial runs pinned to CPU $FAST; ${WARMUP}s warm-up before every run"
 echo
 
@@ -57,6 +57,12 @@ for i in $(seq 1 "$RUNS"); do
   record "SBCL" parallel "sb-thread x$(nproc)"   "$(parallel ./sbcl/sum | grep Parallel)"
   lp=$(parallel ./sbcl/sum-lparallel)
   record "SBCL" parallel "lparallel pmap-reduce" "$(echo "$lp" | grep ^Plain)"
+
+  record "Java" serial   "for loop"              "$(serial java -cp java/out Variants loop)"
+  record "Java" serial   "stream sum()"          "$(serial java -cp java/out Variants seq-sum)"
+  record "Java" serial   "stream reduce()"       "$(serial java -cp java/out Variants seq-reduce)"
+  record "Java" parallel "parallel stream sum()" "$(parallel java -cp java/out SumInt)"
+  record "Java" parallel "parallel reduce()"     "$(parallel java -cp java/out Variants par-reduce)"
 
   # Optimized: same algorithm in all three (8 accumulators, 256 chunks)
   record "C#"   serial-8acc   "8 accumulators"       "$(serial dotnet csharp-opt/out/perf.dll | grep Serial)"
