@@ -23,7 +23,8 @@ For the shortest idiomatic version in each language, and what it costs, see
 |---|---|
 | C# | .NET 9.0 SDK, Release build, default tiered JIT |
 | Rust | rustc 1.100 stable, `--release` (no `target-cpu=native`) |
-| Java | OpenJDK 25.0.5.1 (Ubuntu package), default JVM flags (tiered C1/C2 JIT) |
+| Java | OpenJDK 25.0.5.1 (Ubuntu package), default JVM flags (tiered C1/C2 JIT); AOT cache rows use JDK 25's `-XX:AOTCache` |
+| GraalVM | GraalVM Community 25.0.2 `native-image`, default options (no PGO; that needs Oracle GraalVM) |
 | SBCL | 2.6.10 (official binary), `(optimize (speed 3) (safety 0))`, saved as an executable; lparallel 2.8.4 via Quicklisp |
 | Base image | `mcr.microsoft.com/dotnet/sdk:9.0-noble` (Ubuntu 24.04; SBCL 2.6.10 needs glibc ≥ 2.38) |
 | CPU | Intel Core Ultra X7 358H, AVX2 (no AVX-512), 16 cores: 4 P-cores @ 4.7 GHz, 8 E-cores @ 3.7 GHz, 4 low-power E-cores @ 3.3 GHz |
@@ -45,10 +46,14 @@ to the fastest entry in the same group. See [How it is measured](#how-it-is-meas
 | **parallel** | Rust | rayon | 37 | 1.0x |
 | | SBCL | lparallel `pmap-reduce`, 256 chunks | 40 | 1.1x |
 | | C# | `Parallel.ForEach` + range partitioner | 43 | 1.2x |
+| | Java | parallel stream, `reduce(0.0, Double::sum)`, AOT cache | 57 | 1.5x |
 | | SBCL | `sb-thread` × 16, equal split | 70 | 1.9x |
-| | Java | parallel stream, `reduce(0.0, Double::sum)` | 172 | 4.6x |
-| | Java | parallel stream, `sum()` (original) | 279 | 7.5x |
+| | Java | parallel stream, `sum()`, AOT cache | 199 | 5.4x |
+| | Java | parallel stream, `reduce(0.0, Double::sum)` | 211 | 5.7x |
+| | Java | parallel stream, `reduce(0.0, Double::sum)`, native-image | 239 | 6.5x |
 | | C# | PLINQ (per element) | 283 | 7.6x |
+| | Java | parallel stream, `sum()` (original) | 288 | 7.8x |
+| | Java | parallel stream, `sum()`, native-image | 413 | 11.2x |
 | **serial-8acc** | Rust | 8 accumulators | 173 | 1.0x |
 | | C# | 8 accumulators | 249 | 1.4x |
 | | SBCL | 8 accumulators | 249 | 1.4x |
@@ -64,6 +69,11 @@ to the fastest entry in the same group. See [How it is measured](#how-it-is-meas
 | | SBCL | `sb-simd` + lparallel `pmap-reduce` | 7 | 1.4x |
 | | C# | `Vector256` + PLINQ | 13 | 2.6x |
 
+The Java parallel rows come from a later run of the full benchmark than the
+rest. The others moved by 1–3% between the two runs. Cold JVM runs vary the
+most: single runs of the parallel `reduce()` row ranged from 153 to 264 ms
+(172 ms average in the first run, 211 ms in the second).
+
 Best result per language, from its plain single-threaded loop to its fastest version:
 
 | Lang | plain serial | best | speed-up |
@@ -71,7 +81,7 @@ Best result per language, from its plain single-threaded loop to its fastest ver
 | Rust | 466 | 5 | ~95x |
 | SBCL | 558 | 6 | ~95x |
 | C# | 2144 (479 in a method) | 13 | ~165x |
-| Java | 2755 (493 as a stream) | 172 | ~16x (no `-8acc`/SIMD versions) |
+| Java | 2755 (493 as a stream) | 57 | ~48x (no `-8acc`/SIMD versions) |
 
 ### How it is measured
 
@@ -279,7 +289,7 @@ benchmark:
 double sum = IntStream.range(1, 1_000_000_000 + 1).parallel().mapToDouble(i -> (double) i).sum();
 ```
 
-It takes **279 ms**, against 37–43 ms for rayon, lparallel and
+It takes **about 280 ms**, against 37–43 ms for rayon, lparallel and
 `Parallel.ForEach`. That is about the same as C# PLINQ (283 ms), but for
 different reasons: PLINQ pays per-element iterator overhead. Java's time comes
 from two separate costs, each worth over 100 ms. Parallel streams themselves
@@ -288,10 +298,12 @@ are not slow:
 | | `sum()` | `reduce(0.0, Double::sum)` |
 |---|---:|---:|
 | parallel, first run in a fresh JVM (as in the table) | 279 ms | 172 ms |
+| parallel, first run, with an AOT cache from a training run | 199 ms | 57 ms |
 | parallel, steady state (runs 2–5 in the same JVM) | 185 ms | 44 ms |
 | sequential stream, pinned to one core | 1963 ms | 493 ms |
 | same arithmetic as a hand-written loop, already compiled | 1738 ms | 483 ms |
 
+Numbers from one `./java-experiments.sh` run, except the AOT row, which is from the results table.
 Reproduce with `docker run --rm perf-comp ./java-experiments.sh`.
 
 ### 1. `DoubleStream.sum()` uses compensated summation
@@ -348,8 +360,70 @@ on-stack replacement (OSR). C1 code is slow for this loop: with C2 turned off
 to 67 ms. JVM start-up itself isn't timed. Creating the common fork-join pool
 and bootstrapping the lambda cost about 11 ms.
 
-So the 279 ms breaks down as roughly 279 → 172 ms without the compensated sum,
-then 172 → 44 ms once the JIT has finished.
+So the roughly 280 ms breaks down as about 280 → 170–210 ms without the
+compensated sum, then → 44 ms once the JIT has finished.
+
+### 3. Removing the warm-up: AOT cache and native-image
+
+Two ways to keep a single cold run but avoid the warm-up:
+
+**JDK 25 AOT cache (57 ms for `reduce()`, 199 ms for `sum()`).** A training
+run writes a cache (`java -XX:AOTCacheOutput=…`, done in the Dockerfile with the
+same program). The cache holds the loaded and linked classes and the method
+profiles collected during training (JEP 515). The measured run loads it with
+`-XX:AOTCache=…`. It contains no compiled code: C2 still compiles at run time,
+but with the profiles already there it can start almost at once. The stream's
+inner loop gets C2 code about 15 ms after JVM start instead of 94–188 ms, and
+there is no discard-and-recompile (`java-experiments.sh`, section 6). That
+brings `reduce()` from about 190 ms to 57 ms. That is within 14 ms of
+`Parallel.ForEach` and above the 44 ms steady state, because the first chunks
+still start in slower code. `sum()` goes from about 280 to 199 ms, close to its
+185 ms steady state, so what is left there is the compensated summation. The
+cache must be used with exactly the classpath it was trained with. Otherwise
+the JVM ignores it without saying so, unless run with `-XX:AOTMode=on` (as
+`run.sh` does).
+
+**GraalVM native-image (239 ms for `reduce()`, 413 ms for `sum()`).** No JIT,
+so no warm-up, but slower code. Run on one P-core, the `reduce()` binary
+takes 2243 ms, against 493 ms for the JVM's sequential stream: 4.5× more per
+element. The plain `for` loop compiled the same way is as fast as C2's (478 ms),
+so the slowdown is in the stream code. `asm/java-native-foreach.asm` shows why.
+For each element, `RangeIntSpliterator.forEachRemaining` makes an indirect call
+through the vtable, with its loop counter saved to and reloaded from the stack
+around it:
+
+```asm
+loop:
+  mov   ebp, ebx
+  inc   ebp
+  mov   rdi, rsi                 ; the sink
+  mov   esi, ebx                 ; i
+  mov   rax, rdx                 ; its accept(), looked up in the vtable before the loop
+  mov   [rsp+0x24], ebp          ; <-- i+1 to the stack
+  call  rax                      ; <-- indirect call, per element
+  mov   ebx, [rsp+0x24]          ; <-- and back, with the other loop state
+  mov   rdx, [rsp+0x28]
+  mov   ecx, [rsp+0x34]
+  mov   rsi, [rsp+0x18]
+  cmp   ecx, ebx
+  jle   done
+  jmp   loop
+```
+
+The `mapToDouble` stage it calls then does an interface type check and another
+indirect call to the reducing stage. On the JVM, C2 sees at run time that each
+call site only ever meets one sink class, inlines the whole chain and ends up
+with a plain loop. GraalVM Community compiles ahead of time, without those
+profiles, and leaves the calls in. Oracle GraalVM's profile-guided optimization
+targets exactly this, but it isn't tested here.
+
+Within one core type the native binary scales almost perfectly (one P-core
+2243 ms, four 610 ms; one E-core 3263 ms, eight 453 ms; section 7), so the
+calls cost time on every thread but don't slow the threads down for each other.
+How many pipelines the binary contains also matters. The `Variants` binary,
+which has seven, took about 650 ms for the same `reduce()`, likely because the
+JDK's shared stream code sees more possible sink classes there and can be
+optimized less. That is why `SumIntReduce` is a separate program.
 
 ### Side finding: the plain `for` loop is 6× slower when called once
 
@@ -392,7 +466,9 @@ or partial peeling doesn't change it, and neither does turning off tiering.
 one; use `reduce(0.0, Double::sum)` when speed matters more than the last few
 digits. A single timed run includes JIT warm-up, and a long loop that runs only
 once never gets the normally compiled code. Repeat the measurement in the same
-JVM, or use JMH, when you want steady-state numbers.
+JVM, or use JMH, when you want steady-state numbers. For a fast first run, an
+AOT cache from a training run helps much more than native-image does for
+stream-heavy code.
 
 ## Project layout
 
@@ -415,9 +491,10 @@ JVM, or use JMH, when you want steady-state numbers.
 | `sbcl/sum-lparallel.lisp` | lparallel `pmap-reduce` over 256 chunks with three kernels: plain loop, 8 accumulators, `sb-simd` |
 | `sbcl/lparallel-experiments.lisp` | lparallel styles compared (`pmap-reduce`, `preduce`, futures, `pmapcar`) |
 | `java/SumInt.java` | Original Java program (parallel stream + `DoubleStream.sum()`) |
+| `java/SumIntReduce.java` | Same, with `reduce(0.0, Double::sum)`; also built with an AOT cache and with native-image |
 | `java/Variants.java` | Java variants: sequential/parallel × `sum()`/`reduce()`, plain loop (cold and warm), hand-written Kahan loop |
 | `java-experiments.sh` | Runs the Java experiments behind [Why the Java version is slow](#why-the-java-version-is-slow) |
-| `java-asm.sh` | Dumps C2's machine code for the Java loop (OSR and normal) via hsdis |
+| `java-asm.sh` | Dumps C2's machine code for the Java loop (OSR and normal) via hsdis, and the native-image stream loop |
 | `sbcl/build*.lisp` | Build each Lisp file into a standalone executable |
 | `run.sh` | Runs everything `RUNS` times (serial pinned to the fastest core, with CPU warm-up) and prints the comparison table |
 | `jit-asm.sh` | Dumps the .NET JIT assembly for `csharp/` and `csharp-fn/` |

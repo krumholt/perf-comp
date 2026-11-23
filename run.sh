@@ -62,7 +62,11 @@ for i in $(seq 1 "$RUNS"); do
   record "Java" serial   "stream sum()"          "$(serial java -cp java/out Variants seq-sum)"
   record "Java" serial   "stream reduce()"       "$(serial java -cp java/out Variants seq-reduce)"
   record "Java" parallel "parallel stream sum()" "$(parallel java -cp java/out SumInt)"
-  record "Java" parallel "parallel reduce()"     "$(parallel java -cp java/out Variants par-reduce)"
+  record "Java" parallel "parallel reduce()"     "$(parallel java -cp java/out SumIntReduce)"
+  record "Java" parallel "sum() + AOT cache"     "$(parallel java -XX:AOTMode=on -XX:AOTCache=java/sumint.aot -cp java/sum.jar SumInt)"
+  record "Java" parallel "reduce() + AOT cache"  "$(parallel java -XX:AOTMode=on -XX:AOTCache=java/sumint-reduce.aot -cp java/sum.jar SumIntReduce)"
+  record "Java" parallel "sum() native-image"    "$(parallel ./java/sumint-native)"
+  record "Java" parallel "reduce() native-image" "$(parallel ./java/sumint-reduce-native)"
 
   # Optimized: same algorithm in all three (8 accumulators, 256 chunks)
   record "C#"   serial-8acc   "8 accumulators"       "$(serial dotnet csharp-opt/out/perf.dll | grep Serial)"

@@ -129,7 +129,7 @@
  1f8:	c5 fb 10 05 e8 fd ff 	vmovsd xmm0,QWORD PTR [rip+0xfffffffffffffde8]        # 0xffffffffffffffe8
  1ff:	ff 
  200:	eb a5                	jmp    0x1a7
- 202:	49 ba 6e f0 1b 68 83 	movabs r10,0x7f83681bf06e
+ 202:	49 ba 6e f0 1b 30 74 	movabs r10,0x7f74301bf06e
  209:	7f 00 00 
  20c:	4d 89 97 38 05 00 00 	mov    QWORD PTR [r15+0x538],r10
  213:	e9 a8 e7 90 ff       	jmp    0xffffffffff90e9c0

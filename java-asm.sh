@@ -26,5 +26,12 @@ java -cp java/out $P Variants loop      > "$T/osr.log"
 java -cp java/out $P Variants loop-warm > "$T/warm.log"
 { echo "; C2 OSR compilation of Variants.loop (Variants loop)"; extract "$T/osr.log" osr | decode; } > "$OUT/java-loop-osr.asm"
 { echo "; C2 normal compilation of Variants.loop (Variants loop-warm)"; extract "$T/warm.log" normal | decode; } > "$OUT/java-loop-method.asm"
+# native-image (GraalVM CE): the parallel reduce stream's inner loop and the
+# next stage it calls, both compiled ahead of time without runtime profiles
+N=java/sumint-reduce-native
+{ echo "; native-image $N: RangeIntSpliterator.forEachRemaining and the mapToDouble sink"
+  for f in $(nm "$N" | grep -E "RangeIntSpliterator_forEachRemaining|DoublePipeline\\$\\$L.*_accept" | cut -d" " -f3); do
+    objdump -d -Mintel --no-show-raw-insn "$N" --disassemble="$f" | sed -n "/<.*>:/,\$p" | grep -v "^Disassembly of section"
+  done; } > "$OUT/java-native-foreach.asm"
 rm -rf "$T"
-echo "wrote $OUT/java-loop-osr.asm and $OUT/java-loop-method.asm"
+echo "wrote $OUT/java-loop-osr.asm, $OUT/java-loop-method.asm and $OUT/java-native-foreach.asm"

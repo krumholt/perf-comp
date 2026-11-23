@@ -31,3 +31,17 @@ $J -XX:+PrintCompilation Variants par-reduce | grep -E 'RangeIntSpliterator::for
 echo; echo "== 5. Plain for loop: on-stack-replaced (cold) vs normally compiled (warm)"
 taskset -c "$FAST" $J Variants loop
 taskset -c "$FAST" $J Variants loop-warm
+
+echo; echo "== 6. AOT cache (JDK 25, trained on the same program): when C2 code arrives now"
+java -XX:AOTMode=on -XX:AOTCache=java/sumint-reduce.aot -XX:+PrintCompilation -cp java/sum.jar SumIntReduce \
+  | grep -E 'RangeIntSpliterator::forEachRemaining|Sum Time'
+
+echo; echo "== 7. native-image: 1 thread vs all cores of one type (how it scales on each core type)"
+P=-Djava.util.concurrent.ForkJoinPool.common.parallelism
+for spec in "P-core:2:0" "4 P-cores:0-3:3" "E-core:4:0" "8 E-cores:4-11:7" "all 16:0-15:15"; do
+  IFS=: read -r name cpus n <<SPEC
+$spec
+SPEC
+  out=$(taskset -c "$cpus" ./java/sumint-reduce-native "$P=$n" | grep 'Sum Time')
+  printf '%-10s %s\n' "$name" "$out"
+done

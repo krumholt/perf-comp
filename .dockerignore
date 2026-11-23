@@ -8,3 +8,6 @@ sbcl/sum-opt
 sbcl/sum-simd
 sbcl/sum-lparallel
 java/out/
+java/*.jar
+java/*.aot
+java/*-native

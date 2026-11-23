@@ -30,6 +30,15 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends openjdk-25-jdk-headless libhsdis0-fcml \
  && rm -rf /var/lib/apt/lists/*
 
+# GraalVM Community (for native-image; it needs zlib headers to link)
+ARG GRAALVM_VERSION=25.0.2
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -sSL "https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_linux-x64_bin.tar.gz" \
+    | tar -xz -C /opt \
+ && mv /opt/graalvm-community-* /opt/graalvm
+
 WORKDIR /bench
 COPY csharp ./csharp
 COPY csharp-parallel ./csharp-parallel
@@ -49,7 +58,15 @@ RUN cd csharp-simd && dotnet build -c Release -o out --nologo -v q
 RUN cd csharp-fn && dotnet build -c Release -o out --nologo -v q
 RUN for d in jit-variants/*/; do (cd $d && dotnet build -c Release -o out --nologo -v q) || exit 1; done
 RUN cd rust && cargo build --release -q
-RUN cd java && javac -d out *.java
+# Java: classes + jar; AOT caches from a training run of the same program
+# (JDK 25: classes pre-loaded and linked, plus method profiles); native-image
+# binaries (local symbols kept so java-asm.sh can disassemble them)
+# (training uses the exact classpath run.sh uses, or the JVM ignores the cache)
+RUN cd java && javac -d out *.java && jar cf sum.jar -C out . && cd .. \
+ && java -XX:AOTCacheOutput=java/sumint.aot -cp java/sum.jar SumInt \
+ && java -XX:AOTCacheOutput=java/sumint-reduce.aot -cp java/sum.jar SumIntReduce \
+ && cd java && /opt/graalvm/bin/native-image -H:-DeleteLocalSymbols -cp out -o sumint-native SumInt \
+ && /opt/graalvm/bin/native-image -H:-DeleteLocalSymbols -cp out -o sumint-reduce-native SumIntReduce
 RUN cd sbcl && sbcl --non-interactive --load build.lisp \
  && sbcl --non-interactive --load build-opt.lisp \
  && sbcl --non-interactive --load build-simd.lisp \

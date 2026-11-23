@@ -1,5 +1,5 @@
 ; C2 OSR compilation of Variants.loop (Variants loop)
-   0:	e8 9b b1 db 15       	call   0x15dbb1a0
+   0:	e8 9b 01 5f 16       	call   0x165f01a0
    5:	66 66 66 0f 1f 84 00 	data16 data16 nop WORD PTR [rax+rax*1+0x0]
    c:	00 00 00 00 
   10:	89 84 24 00 c0 fe ff 	mov    DWORD PTR [rsp-0x14000],eax
@@ -13,7 +13,7 @@
   30:	c5 fb 10 46 08       	vmovsd xmm0,QWORD PTR [rsi+0x8]
   35:	c4 e1 f9 7e c5       	vmovq  rbp,xmm0
   3a:	48 8b fe             	mov    rdi,rsi
-  3d:	49 ba 40 39 04 12 62 	movabs r10,0x7f6212043940
+  3d:	49 ba 40 89 87 e6 41 	movabs r10,0x7f41e6878940
   44:	7f 00 00 
   47:	41 ff d2             	call   r10
   4a:	0f 1f 84 00 00 00 00 	nop    DWORD PTR [rax+rax*1+0x0]
